@@ -3,3 +3,12 @@
 __pycache__/
 *.pyc
 .python-version
+
+# generated audio
+outputs/
+
+# editor / OS noise
+.DS_Store
+.cursorindexingignore
+.specstory/
+.pytest_cache/
