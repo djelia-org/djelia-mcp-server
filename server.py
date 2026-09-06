@@ -83,7 +83,7 @@ async def list_supported_languages() -> list[dict]:
     Codes: bam_Latn (Bambara), fra_Latn (French), eng_Latn (English).
     """
     async with _client() as c:
-        r = await c.get("/api/v1/models/translate/supported-languages")
+        r = await c.get("/v1/models/translate/supported-languages")
         r.raise_for_status()
         return r.json()
 
@@ -101,7 +101,7 @@ async def translate(
     """
     async with _client() as c:
         r = await c.post(
-            "/api/v1/models/translate",
+            "/v1/models/translate",
             json={"source": source, "target": target, "text": text},
         )
         r.raise_for_status()

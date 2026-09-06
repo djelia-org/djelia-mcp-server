@@ -76,7 +76,7 @@ sequenceDiagram
     participant S as MCP Server
     participant D as Djelia API
     C->>S: list_supported_languages()
-    S->>D: GET /api/v1/models/translate/supported-languages
+    S->>D: GET /v1/models/translate/supported-languages
     D-->>S: [{code, name}, ...]
     S-->>C: structured list
 ```
@@ -89,7 +89,7 @@ sequenceDiagram
     participant S as MCP Server
     participant D as Djelia API
     C->>S: translate(source, target, text)
-    S->>D: POST /api/v1/models/translate (JSON)
+    S->>D: POST /v1/models/translate (JSON)
     D-->>S: { "text": "<translated>" }
     S-->>C: structured dict
 ```
