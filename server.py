@@ -125,7 +125,7 @@ async def transcribe(audio_base64: str) -> ToolResult:
     ext = _guess_ext(audio)
     files = {"file": (f"audio.{ext}", audio)}
     async with _client() as c:
-        r = await c.post("/api/v2/models/transcribe", files=files)
+        r = await c.post("/v2/models/transcribe", files=files)
         r.raise_for_status()
         data = r.json()
 
@@ -174,7 +174,7 @@ async def text_to_speech(
     """
     async with _client() as c:
         r = await c.post(
-            "/api/v2/models/tts",
+            "/v2/models/tts",
             json={"text": text, "description": description, "format": format},
         )
         r.raise_for_status()

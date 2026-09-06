@@ -113,7 +113,7 @@ sequenceDiagram
     participant D as Djelia API
     C->>S: transcribe(audio_base64)
     S->>S: base64decode + guess_ext (mp3/wav/m4a/ogg)
-    S->>D: POST /api/v2/models/transcribe (multipart)
+    S->>D: POST /v2/models/transcribe (multipart)
     alt single text response
         D-->>S: { "text": "..." }
     else segmented response
@@ -130,7 +130,7 @@ sequenceDiagram
     participant S as MCP Server
     participant D as Djelia API
     C->>S: text_to_speech(text, description, format)
-    S->>D: POST /api/v2/models/tts (JSON)
+    S->>D: POST /v2/models/tts (JSON)
     D-->>S: binary audio bytes
     S-->>C: Audio content block (base64)
 ```
