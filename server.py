@@ -19,7 +19,7 @@ from mcp.types import TextContent
 from starlette.requests import Request
 from starlette.responses import FileResponse, Response
 
-BASE_URL = "https://djelia.cloud"
+BASE_URL = os.environ.get("DJELIA_BASE_URL", "https://api.djelia.cloud")
 API_KEY_ENV = "DJELIA_API_KEY"
 PUBLIC_URL_ENV = "DJELIA_PUBLIC_URL"  # e.g. your ngrok URL, no trailing slash
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -83,7 +83,7 @@ async def list_supported_languages() -> list[dict]:
     Codes: bam_Latn (Bambara), fra_Latn (French), eng_Latn (English).
     """
     async with _client() as c:
-        r = await c.get("/api/v1/models/translate/supported-languages")
+        r = await c.get("/v1/models/translate/supported-languages")
         r.raise_for_status()
         return r.json()
 
@@ -101,7 +101,7 @@ async def translate(
     """
     async with _client() as c:
         r = await c.post(
-            "/api/v1/models/translate",
+            "/v1/models/translate",
             json={"source": source, "target": target, "text": text},
         )
         r.raise_for_status()
@@ -125,7 +125,7 @@ async def transcribe(audio_base64: str) -> ToolResult:
     ext = _guess_ext(audio)
     files = {"file": (f"audio.{ext}", audio)}
     async with _client() as c:
-        r = await c.post("/api/v2/models/transcribe", files=files)
+        r = await c.post("/v2/models/transcribe", files=files)
         r.raise_for_status()
         data = r.json()
 
@@ -174,7 +174,7 @@ async def text_to_speech(
     """
     async with _client() as c:
         r = await c.post(
-            "/api/v2/models/tts",
+            "/v2/models/tts",
             json={"text": text, "description": description, "format": format},
         )
         r.raise_for_status()

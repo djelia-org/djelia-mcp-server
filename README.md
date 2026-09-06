@@ -76,7 +76,7 @@ sequenceDiagram
     participant S as MCP Server
     participant D as Djelia API
     C->>S: list_supported_languages()
-    S->>D: GET /api/v1/models/translate/supported-languages
+    S->>D: GET /v1/models/translate/supported-languages
     D-->>S: [{code, name}, ...]
     S-->>C: structured list
 ```
@@ -89,7 +89,7 @@ sequenceDiagram
     participant S as MCP Server
     participant D as Djelia API
     C->>S: translate(source, target, text)
-    S->>D: POST /api/v1/models/translate (JSON)
+    S->>D: POST /v1/models/translate (JSON)
     D-->>S: { "text": "<translated>" }
     S-->>C: structured dict
 ```
@@ -113,7 +113,7 @@ sequenceDiagram
     participant D as Djelia API
     C->>S: transcribe(audio_base64)
     S->>S: base64decode + guess_ext (mp3/wav/m4a/ogg)
-    S->>D: POST /api/v2/models/transcribe (multipart)
+    S->>D: POST /v2/models/transcribe (multipart)
     alt single text response
         D-->>S: { "text": "..." }
     else segmented response
@@ -130,7 +130,7 @@ sequenceDiagram
     participant S as MCP Server
     participant D as Djelia API
     C->>S: text_to_speech(text, description, format)
-    S->>D: POST /api/v2/models/tts (JSON)
+    S->>D: POST /v2/models/tts (JSON)
     D-->>S: binary audio bytes
     S-->>C: Audio content block (base64)
 ```
@@ -169,6 +169,8 @@ cp .env.example .env
 ```
 
 The server reads `DJELIA_API_KEY` from the environment. It fails fast with a clear message if the key is missing.
+
+The API host is read from `DJELIA_BASE_URL`, defaulting to `https://api.djelia.cloud`. Set it if you need to point the server at a different host.
 
 ---
 
