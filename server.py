@@ -19,7 +19,7 @@ from mcp.types import TextContent
 from starlette.requests import Request
 from starlette.responses import FileResponse, Response
 
-BASE_URL = "https://djelia.cloud"
+BASE_URL = os.environ.get("DJELIA_BASE_URL", "https://api.djelia.cloud")
 API_KEY_ENV = "DJELIA_API_KEY"
 PUBLIC_URL_ENV = "DJELIA_PUBLIC_URL"  # e.g. your ngrok URL, no trailing slash
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")

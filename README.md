@@ -170,6 +170,8 @@ cp .env.example .env
 
 The server reads `DJELIA_API_KEY` from the environment. It fails fast with a clear message if the key is missing.
 
+The API host is read from `DJELIA_BASE_URL`, defaulting to `https://api.djelia.cloud`. Set it if you need to point the server at a different host, for example during the transition off the old `djelia.cloud` host.
+
 ---
 
 ## 🌐 Transports
