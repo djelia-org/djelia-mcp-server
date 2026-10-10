@@ -10,7 +10,8 @@ import base64
 import hashlib
 import os
 import time
-from typing import Literal
+from enum import StrEnum
+from typing import Literal, TypedDict
 
 import httpx
 from fastmcp import FastMCP
@@ -27,6 +28,49 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ponytail: prune files older than this on each TTS call — no cron needed.
 RETENTION_HOURS = float(os.environ.get("DJELIA_RETENTION_HOURS", "24"))
 
+CHAT_COMPLETIONS_PATH = "/openai/v1/chat/completions"
+TRANSCRIPTIONS_PATH = "/openai/v1/audio/transcriptions"
+SPEECH_PATH = "/openai/v1/audio/speech"
+
+TRANSLATION_MODEL = "banjugu-1"
+TRANSCRIPTION_MODEL = "sunjata-1"
+SPEECH_MODEL = "jifili-1"
+
+# jifili-1 serves this voice only and answers 400 for any other.
+SPEECH_VOICE = "moussa"
+
+# The only transcription format that carries per-segment timings as JSON.
+TRANSCRIPTION_RESPONSE_FORMAT = "verbose_json"
+
+USER_ROLE = "user"
+
+
+class TranslationLanguage(StrEnum):
+    """
+    A language code the translation model accepts as a source or target.
+    """
+
+    BAMBARA = "bam_Latn"
+    FRENCH = "fra_Latn"
+    ENGLISH = "eng_Latn"
+
+
+SUPPORTED_LANGUAGES = [
+    {"code": TranslationLanguage.BAMBARA, "name": "Bambara"},
+    {"code": TranslationLanguage.FRENCH, "name": "French"},
+    {"code": TranslationLanguage.ENGLISH, "name": "English"},
+]
+
+
+class TranscriptSegment(TypedDict):
+    """
+    One timed segment of a transcript, as the transcribe tool returns it.
+    """
+
+    text: str
+    start: float
+    end: float
+
 
 def _prune_outputs() -> None:
     """Delete generated audio older than RETENTION_HOURS. Best-effort."""
@@ -39,8 +83,9 @@ def _prune_outputs() -> None:
         except OSError:
             pass
 
-# ponytail: mp3/wav share players; wav_8k/ulaw_8k are telephony PCM, served as wav.
-_EXT_BY_FORMAT = {"mp3": "mp3", "wav": "wav", "wav_8k": "wav", "ulaw_8k": "wav"}
+# The file route serves the media type a file's extension maps to. ulaw is headerless
+# 8 kHz mu-law, which is audio/basic, and only the .au extension maps to it.
+_EXT_BY_FORMAT = {"mp3": "mp3", "wav": "wav", "ulaw": "au"}
 
 
 def _client() -> httpx.AsyncClient:
@@ -76,68 +121,77 @@ async def serve_file(request: Request) -> FileResponse:
 # --- Translation -----------------------------------------------------------
 
 @mcp.tool
-async def list_supported_languages() -> list[dict]:
+async def list_supported_languages() -> list[dict[str, str]]:
     """List languages supported by Djelia translation.
 
     Returns a list of {"code": str, "name": str}.
-    Codes: bam_Latn (Bambara), fra_Latn (French), eng_Latn (English).
+    The API has no endpoint for this list, so it is kept here.
     """
-    async with _client() as c:
-        r = await c.get("/v1/models/translate/supported-languages")
-        r.raise_for_status()
-        return r.json()
+    return SUPPORTED_LANGUAGES
 
 
 @mcp.tool
 async def translate(
-    source: Literal["bam_Latn", "fra_Latn", "eng_Latn"],
-    target: Literal["bam_Latn", "fra_Latn", "eng_Latn"],
+    source: TranslationLanguage,
+    target: TranslationLanguage,
     text: str,
-) -> dict:
+) -> dict[str, str]:
     """Translate `text` from `source` to `target` language.
 
-    Use list_supported_languages to get valid codes.
+    Use list_supported_languages to get valid codes. Source and target must differ.
     Returns {"text": "<translated text>"}.
     """
     async with _client() as c:
         r = await c.post(
-            "/v1/models/translate",
-            json={"source": source, "target": target, "text": text},
+            CHAT_COMPLETIONS_PATH,
+            json={
+                "model": TRANSLATION_MODEL,
+                "messages": [{"role": USER_ROLE, "content": text}],
+                "djelia": {"source_language": source, "target_language": target},
+            },
         )
         r.raise_for_status()
-        return r.json()
+        completion = r.json()
+
+    return {"text": completion["choices"][0]["message"]["content"]}
 
 
-# --- Transcription (V2) ----------------------------------------------------
+# --- Transcription ---------------------------------------------------------
 
 @mcp.tool
 async def transcribe(audio_base64: str) -> ToolResult:
-    """Transcribe Bambara speech to text using Djelia V2.
+    """Transcribe Bambara speech to text.
 
     Args:
         audio_base64: Audio file bytes encoded as base64.
                       Supported: common formats (mp3, wav, m4a, ...).
 
-    Returns the transcribed text, and segment timing if the API provides it.
+    Returns the transcript as timed segments, each with its start and end in seconds.
     """
     audio = base64.b64decode(audio_base64)
     # ponytail: infer name from magic bytes; good enough for mp3/wav/m4a/ogg
     ext = _guess_ext(audio)
     files = {"file": (f"audio.{ext}", audio)}
+    form = {"model": TRANSCRIPTION_MODEL, "response_format": TRANSCRIPTION_RESPONSE_FORMAT}
     async with _client() as c:
-        r = await c.post("/v2/models/transcribe", files=files)
+        r = await c.post(TRANSCRIPTIONS_PATH, data=form, files=files)
         r.raise_for_status()
-        data = r.json()
+        transcription = r.json()
 
-    if isinstance(data, dict) and "text" in data:
-        return ToolResult(
-            structured_content=data,
-            content=[TextContent(type="text", text=data["text"])],
+    # verbose_json segments also carry decoder fields (tokens, logprobs) that mean
+    # nothing to the caller.
+    segments: list[TranscriptSegment] = []
+    for segment in transcription["segments"]:
+        segments.append(
+            TranscriptSegment(
+                text=segment["text"], start=segment["start"], end=segment["end"]
+            )
         )
-    # list of segments
-    lines = [f"[{s.get('start', '?')}-{s.get('end', '?')}] {s.get('text', '')}" for s in data]
+
+    lines = [f"[{s['start']}-{s['end']}] {s['text']}" for s in segments]
+
     return ToolResult(
-        structured_content={"segments": data},
+        structured_content={"segments": segments},
         content=[TextContent(type="text", text="\n".join(lines))],
     )
 
@@ -154,35 +208,38 @@ def _guess_ext(data: bytes) -> str:
     return "bin"
 
 
-# --- Text-to-Speech (V2) ---------------------------------------------------
+# --- Text-to-Speech --------------------------------------------------------
 
 @mcp.tool
 async def text_to_speech(
     text: str,
-    description: str,
-    format: Literal["mp3", "wav", "wav_8k", "ulaw_8k"] = "mp3",
+    format: Literal["mp3", "wav", "ulaw"] = "mp3",
 ) -> ToolResult:
-    """Synthesize Bambara speech from `text` with desired voice `description`.
+    """Synthesize Bambara speech from `text` in the Moussa voice.
 
     Args:
-        text: The text to convert to speech.
-        description: Voice style/characteristics (e.g. "calm male voice, slow pace").
-        format: Output audio format. Default mp3.
+        text: The text to convert to speech, up to 5000 characters.
+        format: Output audio format. Default mp3. ulaw is 8 kHz telephony audio.
 
     Returns a ToolResult containing a public URL and local path to the audio file.
     Open the URL in a browser to listen; the file is also kept on the server disk.
     """
     async with _client() as c:
         r = await c.post(
-            "/v2/models/tts",
-            json={"text": text, "description": description, "format": format},
+            SPEECH_PATH,
+            json={
+                "model": SPEECH_MODEL,
+                "input": text,
+                "voice": SPEECH_VOICE,
+                "response_format": format,
+            },
         )
         r.raise_for_status()
         audio_bytes = r.content
 
     _prune_outputs()
-    ext = _EXT_BY_FORMAT.get(format, "mp3")
-    digest = hashlib.sha1(text.encode() + description.encode()).hexdigest()[:12]
+    ext = _EXT_BY_FORMAT[format]
+    digest = hashlib.sha1(text.encode()).hexdigest()[:12]
     filename = f"tts_{int(time.time())}_{digest}.{ext}"
     filepath = os.path.join(OUTPUT_DIR, filename)
     with open(filepath, "wb") as f:

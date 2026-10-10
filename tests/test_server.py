@@ -103,53 +103,88 @@ def test_client_raises_without_key(monkeypatch):
 
 # --- tools (mocked httpx) ---------------------------------------------------
 
-async def test_list_supported_languages(mock_client):
-    fc = mock_client["install"](get=_Resp(json_data=[
-        {"code": "bam_Latn", "name": "Bambara"},
-        {"code": "fra_Latn", "name": "French"},
-    ]))
-    res = await server.list_supported_languages()
-    assert len(res) == 2
-    assert res[0]["code"] == "bam_Latn"
-
-
-async def test_translate_sends_correct_payload(mock_client):
-    fc = mock_client["install"](post=_Resp(json_data={"text": "aw ni ce"}))
-    res = await server.translate("eng_Latn", "bam_Latn", "hello")
-    assert res == {"text": "aw ni ce"}
-    assert fc.last_post_kwargs["json"] == {
-        "source": "eng_Latn", "target": "bam_Latn", "text": "hello"
+def _verbose_transcription(segments):
+    """
+    A verbose_json transcription body around the given segments.
+    """
+    return {
+        "task": "transcribe",
+        "language": "bam",
+        "duration": 2.0,
+        "text": "",
+        "segments": segments,
     }
 
 
-async def test_transcribe_text_response(mock_client):
-    audio = b"ID3\x03\x00\x00\x00fake"
-    mock_client["install"](post=_Resp(json_data={"text": "hello"}))
-    res = await server.transcribe(base64.b64encode(audio).decode())
-    assert res.structured_content == {"text": "hello"}
-    assert res.content[0].text == "hello"
+async def test_list_supported_languages_lists_the_three_translation_languages():
+    """
+    The language list is fixed in the server, so it answers without calling the API.
+    """
+    res = await server.list_supported_languages()
+
+    assert [language["code"] for language in res] == ["bam_Latn", "fra_Latn", "eng_Latn"]
 
 
-async def test_transcribe_segments_response(mock_client):
+async def test_translate_asks_the_chat_route_for_banjugu_with_the_language_pair(mock_client):
+    """
+    Translation goes through chat completions: the text is the user message, the pair
+    rides in the djelia extension, and the reply is the first choice's content.
+    """
+    completion = {"choices": [{"message": {"role": "assistant", "content": "aw ni ce"}}]}
+    fc = mock_client["install"](post=_Resp(json_data=completion))
+
+    res = await server.translate("eng_Latn", "bam_Latn", "hello")
+
+    assert res == {"text": "aw ni ce"}
+    assert fc.last_post_args == ("/openai/v1/chat/completions",)
+    assert fc.last_post_kwargs["json"] == {
+        "model": "banjugu-1",
+        "messages": [{"role": "user", "content": "hello"}],
+        "djelia": {"source_language": "eng_Latn", "target_language": "bam_Latn"},
+    }
+
+
+async def test_transcribe_returns_segments_without_decoder_fields(mock_client):
+    """
+    Only text, start and end of each verbose_json segment reach the caller, and the
+    text content lists one timed line per segment.
+    """
     audio = b"ID3fake"
-    segs = [
-        {"text": "a", "start": 0.0, "end": 1.0},
-        {"text": "b", "start": 1.0, "end": 2.0},
+    verbose_segments = [
+        {"id": 0, "text": "a", "start": 0.0, "end": 1.0, "tokens": [], "avg_logprob": 0.0},
+        {"id": 1, "text": "b", "start": 1.0, "end": 2.0, "tokens": [], "avg_logprob": 0.0},
     ]
-    mock_client["install"](post=_Resp(json_data=segs))
+    mock_client["install"](post=_Resp(json_data=_verbose_transcription(verbose_segments)))
+
     res = await server.transcribe(base64.b64encode(audio).decode())
-    assert res.structured_content == {"segments": segs}
-    assert "[0.0-1.0] a" in res.content[0].text
+
+    assert res.structured_content == {
+        "segments": [
+            {"text": "a", "start": 0.0, "end": 1.0},
+            {"text": "b", "start": 1.0, "end": 2.0},
+        ]
+    }
+    assert res.content[0].text == "[0.0-1.0] a\n[1.0-2.0] b"
 
 
-async def test_transcribe_sends_multipart_with_ext(mock_client):
+async def test_transcribe_uploads_to_sunjata_in_verbose_json(mock_client):
+    """
+    The audio goes up as a multipart file named after its sniffed format, with the
+    model and the format that carries segment timings as form fields.
+    """
     audio = b"ID3fake"
-    fc = mock_client["install"](post=_Resp(json_data={"text": "x"}))
+    fc = mock_client["install"](post=_Resp(json_data=_verbose_transcription([])))
+
     await server.transcribe(base64.b64encode(audio).decode())
+
     files = fc.last_post_kwargs["files"]
     fname, fdata = files["file"][0], files["file"][1]
     assert fname.endswith(".mp3")  # magic-byte sniff worked
     assert fdata == audio
+    assert fc.last_post_args == ("/openai/v1/audio/transcriptions",)
+    assert fc.last_post_kwargs["data"] == {
+        "model": "sunjata-1", "response_format": "verbose_json"
+    }
 
 
 async def test_text_to_speech_saves_and_returns_url(mock_client, tmp_path, monkeypatch):
@@ -158,7 +193,7 @@ async def test_text_to_speech_saves_and_returns_url(mock_client, tmp_path, monke
     mp3 = b"ID3\x03\x00\x00\x00" + b"\x00" * 100
     mock_client["install"](post=_Resp(content=mp3))
 
-    res = await server.text_to_speech("hello", "calm voice")
+    res = await server.text_to_speech("hello")
 
     url = res.structured_content["url"]
     assert url.startswith("https://example.com/files/tts_")
@@ -174,17 +209,38 @@ async def test_text_to_speech_relative_url_without_public(mock_client, tmp_path,
     monkeypatch.delenv("DJELIA_PUBLIC_URL", raising=False)
     mock_client["install"](post=_Resp(content=b"\xff\xfbxx"))
 
-    res = await server.text_to_speech("hi", "voice")
+    res = await server.text_to_speech("hi")
     assert res.structured_content["url"].startswith("/files/")
 
 
-async def test_text_to_speech_format_to_ext_mapping(mock_client, tmp_path, monkeypatch):
+async def test_text_to_speech_asks_jifili_for_moussa(mock_client, tmp_path, monkeypatch):
+    """
+    Speech goes to the OpenAI speech route with the only voice jifili-1 serves and the
+    format the caller picked.
+    """
+    monkeypatch.setattr(server, "OUTPUT_DIR", str(tmp_path))
+    fc = mock_client["install"](post=_Resp(content=b"RIFF\x00\x00\x00\x00WAVE"))
+
+    await server.text_to_speech("hi", format="wav")
+
+    assert fc.last_post_args == ("/openai/v1/audio/speech",)
+    assert fc.last_post_kwargs["json"] == {
+        "model": "jifili-1", "input": "hi", "voice": "moussa", "response_format": "wav"
+    }
+
+
+async def test_text_to_speech_saves_ulaw_as_au(mock_client, tmp_path, monkeypatch):
+    """
+    Headerless mu-law is saved under .au, the extension the file route serves as
+    audio/basic.
+    """
     monkeypatch.setattr(server, "OUTPUT_DIR", str(tmp_path))
     monkeypatch.delenv("DJELIA_PUBLIC_URL", raising=False)
-    mock_client["install"](post=_Resp(content=b"RIFF\x00\x00\x00\x00WAVE"))
+    mock_client["install"](post=_Resp(content=b"\xff\x7f"))
 
-    res = await server.text_to_speech("hi", "voice", format="wav_8k")
-    assert res.structured_content["url"].endswith(".wav")  # telephony PCM served as wav
+    res = await server.text_to_speech("hi", format="ulaw")
+
+    assert res.structured_content["url"].endswith(".au")
 
 
 # --- file-serving route -----------------------------------------------------
