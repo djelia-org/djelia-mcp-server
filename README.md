@@ -14,18 +14,18 @@ Built with [FastMCP](https://gofastmcp.com) v3 · Python 3.11+ · `uv`-managed
 
 [Djelia](https://djelia.cloud) is a linguistic-AI platform focused on African languages — currently **Bambara** (`bam_Latn`), with translation bridging to **French** (`fra_Latn`) and **English** (`eng_Latn`).
 
-This server wraps the Djelia REST API behind the **Model Context Protocol**, so any MCP-compatible client (Claude Desktop, Cursor, Cline, your own agent) can call Djelia's models as native tools — no SDK glue, no HTTP plumbing in your prompt.
+This server wraps Djelia's OpenAI-compatible API behind the **Model Context Protocol**, so any MCP-compatible client (Claude Desktop, Cursor, Cline, your own agent) can call Djelia's models as native tools — no SDK glue, no HTTP plumbing in your prompt.
 
 ### What you get
 
-| # | Tool | Direction | V1 / V2 | Returns |
-|---|------|-----------|---------|---------|
+| # | Tool | Direction | Model | Returns |
+|---|------|-----------|-------|---------|
 | 1 | `list_supported_languages` | — | — | JSON list |
-| 2 | `translate` | text → text | v1 | translated text |
-| 3 | `transcribe` | audio → text | **v2** | text + segment timing |
-| 4 | `text_to_speech` | text → audio | **v2** | audio content block |
+| 2 | `translate` | text → text | `banjugu-1` | translated text |
+| 3 | `transcribe` | audio → text | `sunjata-1` | timed segments |
+| 4 | `text_to_speech` | text → audio | `jifili-1` | audio file URL |
 
-> **Design note:** V2 APIs are exposed for transcription and TTS because they supersede V1 (richer voices via `description`, format control). True `/stream` endpoints are omitted — MCP is request/response, so we aggregate the stream inside the tool. Add raw streaming tools only if a use case needs them.
+> **Design note:** every call goes to the OpenAI-compatible surface under `/openai/v1`, with the model named in the request. Streaming is not used: MCP is request/response, so each tool waits for the full answer.
 
 ---
 
@@ -45,9 +45,9 @@ flowchart LR
     end
 
     subgraph Djelia["Djelia Cloud API"]
-        T1["/v1/translate"]
-        T2["/v2/transcribe"]
-        T3["/v2/tts"]
+        T1["/openai/v1/chat/completions"]
+        T2["/openai/v1/audio/transcriptions"]
+        T3["/openai/v1/audio/speech"]
     end
 
     LLM -- "MCP JSON-RPC" --> MCP
@@ -68,17 +68,14 @@ flowchart LR
 
 ### 1 · `list_supported_languages`
 
-Returns the language codes you'll pass to `translate`.
+Returns the language codes you'll pass to `translate`. The list is fixed in the server, so this tool makes no API call.
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant S as MCP Server
-    participant D as Djelia API
     C->>S: list_supported_languages()
-    S->>D: GET /api/v1/models/translate/supported-languages
-    D-->>S: [{code, name}, ...]
-    S-->>C: structured list
+    S-->>C: [{code, name}, ...]
 ```
 
 ### 2 · `translate`
@@ -89,9 +86,19 @@ sequenceDiagram
     participant S as MCP Server
     participant D as Djelia API
     C->>S: translate(source, target, text)
-    S->>D: POST /api/v1/models/translate (JSON)
-    D-->>S: { "text": "<translated>" }
-    S-->>C: structured dict
+    S->>D: POST /openai/v1/chat/completions (JSON, model banjugu-1)
+    D-->>S: { "choices": [{ "message": { "content": "<translated>" } }] }
+    S-->>C: { "text": "<translated>" }
+```
+
+The text is sent as the user message. The language pair rides in the Djelia extension of the request body:
+
+```json
+{
+  "model": "banjugu-1",
+  "messages": [{ "role": "user", "content": "Bonjour" }],
+  "djelia": { "source_language": "fra_Latn", "target_language": "bam_Latn" }
+}
 ```
 
 **Parameters**
@@ -102,9 +109,11 @@ sequenceDiagram
 | `target` | enum | `bam_Latn` · `fra_Latn` · `eng_Latn` |
 | `text` | string | the text to translate |
 
+`source` and `target` must differ.
+
 ### 3 · `transcribe` (Bambara audio → text)
 
-The tool decodes base64 → sniffs the format → uploads as multipart to the V2 transcription endpoint.
+The tool decodes base64 → sniffs the format → uploads as multipart with `model=sunjata-1` and `response_format=verbose_json`, the format that carries segment timings.
 
 ```mermaid
 sequenceDiagram
@@ -113,13 +122,9 @@ sequenceDiagram
     participant D as Djelia API
     C->>S: transcribe(audio_base64)
     S->>S: base64decode + guess_ext (mp3/wav/m4a/ogg)
-    S->>D: POST /api/v2/models/transcribe (multipart)
-    alt single text response
-        D-->>S: { "text": "..." }
-    else segmented response
-        D-->>S: [{ text, start, end }, ...]
-    end
-    S-->>C: ToolResult (structured + text)
+    S->>D: POST /openai/v1/audio/transcriptions (multipart, model sunjata-1)
+    D-->>S: { "text": "...", "segments": [{ text, start, end, ... }] }
+    S-->>C: ToolResult { "segments": [{ text, start, end }] } + one timed line per segment
 ```
 
 ### 4 · `text_to_speech` (text → Bambara audio)
@@ -129,19 +134,21 @@ sequenceDiagram
     participant C as Client
     participant S as MCP Server
     participant D as Djelia API
-    C->>S: text_to_speech(text, description, format)
-    S->>D: POST /api/v2/models/tts (JSON)
+    C->>S: text_to_speech(text, format)
+    S->>D: POST /openai/v1/audio/speech (JSON, model jifili-1, voice moussa)
     D-->>S: binary audio bytes
-    S-->>C: Audio content block (base64)
+    S->>S: save under outputs/
+    S-->>C: ToolResult { url, path, format }
 ```
 
 **Parameters**
 
 | Name | Type | Values |
 |---|---|---|
-| `text` | string | text to synthesize |
-| `description` | string | voice style, e.g. `"calm male voice, slow pace"` |
-| `format` | enum | `mp3` (default) · `wav` · `wav_8k` · `ulaw_8k` |
+| `text` | string | text to synthesize, up to 5000 characters |
+| `format` | enum | `mp3` (default) · `wav` · `ulaw` (8 kHz telephony, saved as `.au`) |
+
+The voice is always Moussa, the only voice `jifili-1` serves.
 
 ---
 
@@ -169,6 +176,8 @@ cp .env.example .env
 ```
 
 The server reads `DJELIA_API_KEY` from the environment. It fails fast with a clear message if the key is missing.
+
+The API host is read from `DJELIA_BASE_URL`, defaulting to `https://api.djelia.cloud`. Set it if you need to point the server at a different host.
 
 ---
 
